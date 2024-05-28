@@ -35,8 +35,8 @@ class Experiment(BaseModel):
     time: list = []
     lst_N_eff: list = []
     lst_n_resample_indexes: list = []
+    lst_camels_forcing: list = []
 
-    camels_forcing: Any = None
     p_initial: Any = None
     ensemble: Any = None
     paths: tuple[Path, ...] | None = None
@@ -55,6 +55,8 @@ class Experiment(BaseModel):
 
     @staticmethod
     def calc_NSE(Qo, Qm):
+        Qo[Qo == 0] = 1e-8
+        Qm[Qm == 0] = 1e-8
         QoAv = np.mean(Qo)
         ErrUp = np.sum((Qo - Qm) ** 2)
         ErrDo = np.sum((Qo - QoAv) ** 2)
@@ -62,6 +64,8 @@ class Experiment(BaseModel):
 
     @staticmethod
     def calc_log_NSE(Qo, Qm):
+        Qo[Qo == 0] = 1e-8
+        Qm[Qm == 0] = 1e-8
         QoAv = np.mean(Qo)
         ErrUp = np.sum((np.log(Qo) - np.log(Qm)) ** 2)
         ErrDo = np.sum((np.log(Qo) - np.log(QoAv)) ** 2)
@@ -80,12 +84,14 @@ class Experiment(BaseModel):
         #         shutil.copy(origin_camels_path, camels_file_path)
         #     lst_camels_file_path.append(camels_file_path.name)
 
-        self.camels_forcing = sources.HBVForcing(start_time=self.experiment_start_date,
-                               end_time=self.experiment_end_date,
-                               directory=forcing_path,
-                               camels_file=f'{self.HRU_id}_lump_cida_forcing_leap.txt',  # lst_camels_file_path[n]
-                               alpha=self.alpha,
-                               )
+        for n in range(self.n_particles):
+            self.lst_camels_forcing.append(
+                sources.HBVForcing(start_time=self.experiment_start_date,
+                                   end_time=self.experiment_end_date,
+                                   directory=forcing_path,
+                                   camels_file=f'{self.HRU_id}_lump_cida_forcing_leap.txt',  # lst_camels_file_path[n]
+                                   alpha=self.alpha,
+                                   ))
         # del lst_camels_file_path
         # gc.collect()
 
@@ -124,7 +130,7 @@ class Experiment(BaseModel):
 
         # this initializes the models for all ensemble members.
         self.ensemble.initialize(model_name=[self.model_name] * self.n_particles,
-                                 forcing=[self.camels_forcing] * self.n_particles,
+                                 forcing=self.lst_camels_forcing,
                                  setup_kwargs=setup_kwargs_lst)
 
         del setup_kwargs_lst, p_initial, array_random_num
@@ -165,33 +171,9 @@ class Experiment(BaseModel):
             gc.collect()
 
     def initialize_da_method(self):
-        # set up hyperparameters
-        # sigma_pp, sigma_ps, sigma_w, sigma_p_Sf = self.sigma_tuple
-        # p_min_initial, p_max_initial, s_max_initial, s_min_initial = self.storage_parameter_bounds
-        # # "Imax", "Ce", "Sumax", "Beta", "Pmax", "Tlag", "Kf", "Ks", "FM" "Si", "Su", "Sf", "Ss", "Sp + Q
-        # # p_mean = (p_max_initial + p_min_initial) / 2
-        # p_sig = np.sqrt((p_max_initial - p_min_initial) ** 2 / 12)
-        # s_sig = np.sqrt((s_max_initial - s_min_initial) ** 2 / 12)
-        #
-        # lst_like_sigma = (list(sigma_p_Sf * p_sig) +  # parameters
-        #                   list(sigma_p_Sf * s_sig) +  # states
-        #                   [0])  # Q
-        # hyper_parameters = {'like_sigma_weights': sigma_w,
-        #                     'like_sigma_state_vector': lst_like_sigma,
-        #                     'f_n_particles': self.f_n_particles,
-        #
-        #                     }
         print(f'init_da', end=" ")
-
-        # self.ensemble.initialize_da_method(ensemble_method_name="PF",
-        #                                    hyper_parameters=hyper_parameters,
-        #                                    state_vector_variables="all",
-        #                                    # the next three are keyword arguments but are needed.
-        #                                    observation_path=self.ds_obs_dir,
-        #                                    observed_variable_name="Q",
-        #                                    measurement_operator=self.H,
-        #                                    )
         self.ensemble.set_state_vector_variables("all")
+
         # extract units for later
         state_vector_variables = self.ensemble.ensemble_list[0].variable_names
 
@@ -208,17 +190,12 @@ class Experiment(BaseModel):
         try:
             for i in tqdm(range(n_timesteps)):
                 self.time.append(pd.Timestamp(self.ref_model.time_as_datetime.date()))
-                # update every 3 steps
-
 
                 self.ensemble.update(assimilate=False)
 
                 state_vector = self.ensemble.get_state_vector()
-                # sv_min = state_vector.T.min(axis=1)
-                # sv_max = state_vector.T.max(axis=1)
-                # sv_mean = state_vector.T.mean(axis=1)
-                # summarised_state_vector = np.array([sv_min, sv_max, sv_mean])
                 lst_state_vector.append(state_vector)
+
                 del state_vector
                 gc.collect()
 
@@ -233,19 +210,44 @@ class Experiment(BaseModel):
 
     def create_combined_ds(self):
         data_vars = {}
-        for i, name in enumerate(param_names + stor_names + ["Q"]):
+        for i, name in enumerate(stor_names):
             storage_terms_i = xr.DataArray(self.state_vector_arr[:, :, i].T,
                                            name=name,
-                                           dims=["EnsembleMember", "time"],
+                                           dims=["EnsembleMember","time"],
                                            coords=[np.arange(self.n_particles), self.time],
                                            attrs={
-                                               "title": f"HBV storage & param terms data over time for {self.n_particles} particles ",
-                                               "history": f"Storage term results from ewatercycle_HBV.model",
+                                               "title": f"HBV storage terms data over time for {self.n_particles} particles ",
+                                               "history": f"results from ewatercycle_HBV.model",
                                                "description": "Modeled values",
                                                "units": f"{self.units[name]}"})
             data_vars[name] = storage_terms_i
 
-        p_min_initial, p_max_initial, s_max_initial, s_min_initial = self.storage_parameter_bounds
+        for i, name in enumerate(["Q"]):
+            storage_terms_i = xr.DataArray(self.state_vector_arr[:, :, -1].T,
+                                           name=name,
+                                           dims=["EnsembleMember","time"],
+                                           coords=[np.arange(self.n_particles), self.time],
+                                           attrs={
+                                               "title": f"HBV Q value over time for {self.n_particles} particles ",
+                                               "history": f"results from ewatercycle_HBV.model",
+                                               "description": "Modeled values",
+                                               "units": f"{self.units[name]}"})
+            data_vars[name] = storage_terms_i
+
+        # # for callibration params are constant so only store once
+        for i, name in enumerate(param_names):
+            storage_terms_i = xr.DataArray(self.state_vector_arr[0, :, i].T,
+                                           name=name,
+                                           dims=["EnsembleMember"],
+                                           coords=[np.arange(self.n_particles)],
+                                           attrs={
+                                               "title": f"HBV param terms data over time for {self.n_particles} particles ",
+                                               "history": f" results from ewatercycle_HBV.model",
+                                               "description": "Modeled values",
+                                               "units": f"{self.units[name]}"})
+            data_vars[name] = storage_terms_i
+
+
         ds_combined = xr.Dataset(data_vars,
                                  attrs={
                                      "title": f"HBV storage & parameter terms data over time for {self.n_particles} particles",
@@ -257,11 +259,34 @@ class Experiment(BaseModel):
 
         ds_obs = xr.open_dataset(self.ds_obs_dir)
         ds_observations = ds_obs['Q'].sel(time=self.time)
-        ds_obs.close()
+
         ds_combined['Q_obs'] = ds_observations
         ds_combined['Q_obs'].attrs.update({
             'history': 'USGS streamflow data obtained from CAMELS dataset',
             'url': 'https://dx.doi.org/10.5065/D6MW2F4D'})
+
+        # only save the best run for (storage) efficiency
+        NSE = np.zeros(self.n_particles)
+        log_NSE = np.zeros(self.n_particles)
+        for i in range(self.n_particles):
+            NSE[i] = self.calc_NSE(ds_observations.to_numpy(), ds_combined["Q"].isel(EnsembleMember=i).to_numpy().copy())
+            log_NSE[i] = self.calc_log_NSE(ds_observations.values, ds_combined["Q"].isel(EnsembleMember=i).to_numpy().copy())
+
+        i_max_nse = NSE.argmax()
+        i_max_log_nse = log_NSE.argmax()
+
+        if i_max_nse == i_max_log_nse:
+            ds_combined = ds_combined.isel(EnsembleMember=i_max_nse)
+        else:
+            ds_combined = ds_combined.isel(EnsembleMember=[i_max_nse, i_max_log_nse])
+
+        dict_nse = dict(NSE_max=NSE.max(),
+                        log_NSE_max=log_NSE.max(),
+                        i_NSE_max=i_max_nse,
+                        i_log_NSE_max=i_max_log_nse)
+        ds_combined.attrs.update(dict_nse)
+
+
 
         current_time = str(datetime.now())[:-10].replace(":", "_")
         if self.save:
@@ -271,7 +296,7 @@ class Experiment(BaseModel):
                 f'{current_time}.nc')
             ds_combined.to_netcdf(file_dir)
 
-
+        ds_obs.close()
         del (self.time, ds_obs, self.lst_n_resample_indexes)
 
         gc.collect()
@@ -281,7 +306,7 @@ class Experiment(BaseModel):
     def finalize(self):
         forcing_path = self.paths[0]
         # remove temp file once run - in case of camels just one file
-        for index, forcing in enumerate([self.camels_forcing]):
+        for index, forcing in enumerate(self.lst_camels_forcing):
             forcing_file = forcing_path / forcing.pr
             forcing_file.unlink(missing_ok=True)
 
@@ -345,8 +370,6 @@ def run_experiment(HRU_id_int: Any,
 
         print(f'output ', end=print_ending)
         ds_combined = experiment.create_combined_ds()
-
-
         ds_combined.close()
         del ds_combined
         gc.collect()
@@ -387,7 +410,7 @@ def main():
     n_start_skip = 0
     n_end_skip = 0
 
-    total_nruns = len(HRU_ids) - n_start_skip - n_end_skip 
+    total_nruns = len(HRU_ids) - n_start_skip - n_end_skip
     avg_run_length = 0.2  # hr
     total_hrs = total_nruns * avg_run_length
     estimated_finish = datetime.now() + timedelta(hours=total_hrs)
