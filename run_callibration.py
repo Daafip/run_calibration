@@ -407,7 +407,7 @@ def main():
     forcing_path = Path.cwd() / "Forcing"
     HRU_ids = [path.name[0:8] for path in
                forcing_path.glob("*_lump_cida_forcing_leap.txt")]
-    n_start_skip = 0
+    n_start_skip = 17
     n_end_skip = 0
 
     total_nruns = len(HRU_ids) - n_start_skip - n_end_skip
