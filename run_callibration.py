@@ -405,9 +405,11 @@ Check list for a new experiment:
 def main():
     """Main script"""
     forcing_path = Path.cwd() / "Forcing"
-    HRU_ids = [path.name[0:8] for path in
-               forcing_path.glob("*_lump_cida_forcing_leap.txt")]
-    n_start_skip = 17
+    #HRU_ids = [path.name[0:8] for path in
+    #           forcing_path.glob("*_lump_cida_forcing_leap.txt")]
+    HRU_ids = [3237280, 3364500, 4015330, 
+                4115265, 4221000, 5458000, 5584500, 6224000]
+    n_start_skip = 0
     n_end_skip = 0
 
     total_nruns = len(HRU_ids) - n_start_skip - n_end_skip
